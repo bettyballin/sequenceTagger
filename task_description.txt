@@ -1,0 +1,18 @@
+Your task is to implement a simple sequence tagger using word embeddings for named entity recognition.
+The architecture must be a bidirectional LSTM with a single 100-dimensional hidden layer.
+Use following parameters for training:
+* Use Crossentropy-loss and the Adam optimizer
+* Train for 20 Epochs
+* Set the batch-size to 1
+
+The data is already split into a train, dev, and test set. The input tokens are specified in the first column and the labels are in last column.
+
+The word embeddings are pretrained and should not be updated with the model. You can download them here:
+https://nextcloud.ukp.informatik.tu-darmstadt.de/index.php/s/g6xfciqqQbw99Xw
+
+Further requirements are:
+* Use PyTorch (not Keras or Tensorflow) to implement the model
+* Use python 3.6 or higher
+* Do not use any other libraries besides native python libraries, PyTorch, numpy, pandas, or matplotlib (if you want to provide any visualization). 
+* The resulting submission should be one (or several) python files. Do not submit a Jupyter notebook.
+* Report the macro-averaged F1 scores on the dev data (for all 20 epochs) and the macro-averaged F1 scores of the final model on the test data.
