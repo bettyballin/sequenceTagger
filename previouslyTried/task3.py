@@ -4,8 +4,8 @@ import pandas as pd
 import torch
 from torch import nn
 import torchtext
-from torchtext.legacy.data import Field, LabelField, BucketIterator, Iterator, Example
-from torch.utils.data import Dataset, DataLoader
+from torchtext.legacy.data import Field, LabelField, Dataset, BucketIterator, Iterator, Example
+from torch.utils.data import DataLoader
 from torchtext.vocab import GloVe
 from torch.optim import Adam
 import matplotlib.pyplot as plt
@@ -28,20 +28,7 @@ def load_data(file, datafields):
             columns = line.split()
             words.append(columns[0])
             labels.append(columns[-1])
-    return CustomDataset([e.text for e in examples], [e.label for e in examples], datafields)
-
-class CustomDataset(Dataset):
-    def __init__(self, text, labels, fields):
-        super(CustomDataset, self).__init__()
-        self.labels = labels
-        self.text = text
-        self.fields = fields
-    def __getitem__(self, index):
-        x = torch.tensor(self.labels[index], dtype=torch.float)
-        y = torch.tensor(self.text[index], dtype=torch.float)
-        return x,y 
-    def __len__(self):
-        return len(self.labels)
+    return Dataset(examples, datafields)
     
 class BiLSTM(nn.Module):
     def __init__(self, text_field, label_field, emb_dim, size, update_pretrained=False):
@@ -76,10 +63,10 @@ class BiLSTM(nn.Module):
         # and max_len is the maximal length of a document in the batch.
 
         # First look up the embeddings for all the words in the documents.
-        # The shape is now (max_len, n_sentences, emb_dim).     
-        print(sentences[0])
+        # The shape is now (max_len, n_sentences, emb_dim).   
         embedded = self.embedding(sentences)
 
+#
         # The shape of the output tensor is (max_len, n_sentences, 2*rnn_size).
         lstm_out, _ = self.lstm(embedded)
         
@@ -97,7 +84,6 @@ class BiLSTM(nn.Module):
         return out
 
     def predict(self, sentences):
-        print("predict")
         # Compute the outputs from the linear units.
         scores = self.compute_outputs(sentences)
 
@@ -107,9 +93,6 @@ class BiLSTM(nn.Module):
         # We transpose the prediction to (n_sentences, max_len), and convert it
         # to a NumPy matrix.
         return predicted.t().cpu().numpy()
-
-
-
 
 # Convert a list of BIO labels, coded as integers, into spans identified by a beginning, an end, and a label.
 # To allow easy comparison later, we store them in a dictionary indexed by the start position.
@@ -211,7 +194,6 @@ class Tagger:
         
     def tag(self, sentences):
         # This method applies the trained model to a list of sentences.
-        
         # First, create a torchtext Dataset containing the sentences to tag.
         examples = []
         for sen in sentences:
@@ -245,27 +227,28 @@ class Tagger:
         # Read training and validation data according to the predefined split.
         train_examples = load_data('data/train.conll', self.fields)
         valid_examples = load_data('data/test.conll', self.fields)
-        # Count the number of words and sentences.
+       # Count the number of words and sentences.
         n_tokens_train = 0
         n_sentences_train = 0
-        for ex in train_examples.text:
-            n_tokens_train += len(ex) + 2
+        for ex in train_examples:
+            n_tokens_train += len(ex.text) + 2
             n_sentences_train += 1
         n_tokens_valid = 0       
-        for ex in valid_examples.text:
-            n_tokens_valid += len(ex)
+        for ex in valid_examples:
+            n_tokens_valid += len(ex.text)
 
         # Load the pre-trained embeddings that come with the torchtext library.
         use_pretrained = True
         if use_pretrained:
             print('We are using pre-trained word embeddings.')
-            self.TEXT.build_vocab(train_examples.text, vectors="glove.6B.50d")
+            self.TEXT.build_vocab(train_examples, vectors="glove.6B.50d")
         else:  
             print('We are training word embeddings from scratch.')
-            self.TEXT.build_vocab(train_examples.text, max_size=5000)
-        self.LABEL.build_vocab(train_examples.labels)
+            self.TEXT.build_vocab(train_examples, max_size=5000)
+        self.LABEL.build_vocab(train_examples)
     
-        self.model = BiLSTM(self.TEXT, self.LABEL, emb_dim=100, size=128, update_pretrained=False)
+        # Create one of the models defined above.
+        self.model = BiLSTM(self.TEXT, self.LABEL, emb_dim=50, size=100, update_pretrained=False)
     
         self.model.to(self.device)
     
@@ -278,7 +261,7 @@ class Tagger:
             train_examples,
             device=self.device,
             batch_size=batch_size,
-            sort_key=lambda x: len(x[1]),
+            sort_key=lambda x: len(x.text),
             repeat=False,
             train=True,
             sort=True)
@@ -286,16 +269,16 @@ class Tagger:
         valid_iterator = BucketIterator(
             valid_examples,
             device=self.device,
-            batch_size=batch_size,
-            sort_key=lambda x: len(x[1]),
+            batch_size=64,
+            sort_key=lambda x: len(x.text),
             repeat=False,
             train=False,
             sort=True)
     
-        train_batches = train_iterator
-        valid_batches = valid_iterator
+        train_batches = list(train_iterator)
+        valid_batches = list(valid_iterator)
 
-        optimizer = Adam(self.model.parameters(), lr=0.01, weight_decay=1e-5)
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=0.01, weight_decay=1e-5)
 
         n_labels = len(self.LABEL.vocab)
 
@@ -310,14 +293,15 @@ class Tagger:
             loss_sum = 0
 
             self.model.train()
-
-            # Compute the output and loss.
-            loss = self.model(train_examples.text, train_examples.labels) / mean_n_tokens
-            
-            optimizer.zero_grad()            
-            loss.backward()
-            optimizer.step()
-            loss_sum += loss.item()
+            for batch in train_batches:
+                
+                # Compute the output and loss.
+                loss = self.model(batch.text, batch.label) / mean_n_tokens
+                
+                optimizer.zero_grad()            
+                loss.backward()
+                optimizer.step()
+                loss_sum += loss.item()
 
             train_loss = loss_sum / n_batches
             history['train_loss'].append(train_loss)
@@ -359,3 +343,4 @@ class Tagger:
 
 tagger = Tagger(lower=False)
 tagger.train()
+plt.show()
