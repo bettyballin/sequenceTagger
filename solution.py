@@ -5,8 +5,6 @@ from torch import nn
 from torchtext.legacy.data import Field, Dataset, BucketIterator, Example
 from torch.optim import Adam
 import matplotlib.pyplot as plt
-import time
-
 
 def load_data(filename, datafields):
     """Load words and labels from specified file location
@@ -43,7 +41,7 @@ class BiLSTMTagger(nn.Module):
     Args:
         text (Field)
         label (Field)
-        emb_dim (int)
+        emb_dim (int): num of input features
 
     Returns:
         Module
@@ -87,88 +85,87 @@ class BiLSTMTagger(nn.Module):
         predicted = scores.argmax(dim=2)    # get the best prediction
         return np.array(predicted.t().cpu())
 
-def to_spans(labels, voc):
-    """ Convert a list of predicted labels to spans
+def map_labels(ids, labels):
+    """ Map ids of predictions to their labels
 
     Args:
-        labels (list): IDs of labels
-        voc (list): Vocab of labels
+        ids (list): IDs of predicted labels
+        labels (list): list of labels in the vocab
 
     Returns:
-        Dict: dictionary of spans
+        Dict: dictionary of id to label
     """
-    spans = {}
-    current_lbl = None
-    current_start = None
-    for i, id in enumerate(labels):
-        l = voc[id]
+    mapped = {}
+    current = None
+    lbl = None
+    for i, id in enumerate(ids):
+        l = labels[id]
         if l[0] == 'B': 
-            if current_lbl:
-                spans[current_start] = (current_lbl, i)
-            current_lbl = l[2:]
-            current_start = i
+            if current:
+                mapped[lbl] = (current, i)
+            current = l[2:]
+            lbl = i
         elif l[0] == 'I':
-            if current_lbl:
-                if current_lbl != l[2:]:
-                    spans[current_start] = (current_lbl, i)
-                    current_lbl = l[2:]
-                    current_start = i
+            if current:
+                if current != l[2:]:
+                    mapped[lbl] = (current, i)
+                    current = l[2:]
+                    lbl = i
             else:
-                current_lbl = l[2:]
-                current_start = i
+                current = l[2:]
+                lbl = i
         else:
-            if current_lbl:
-                spans[current_start] = (current_lbl, i)
-                current_lbl = None
-                current_start = None
-    return spans
+            if current:
+                mapped[lbl] = (current, i)
+                current = None
+                lbl = None
+    return mapped
 
-def compare(gold, pred, stats):
-    """Compares gold and prediction spans and store the result in spans
+def count(actual, pred, stats):
+    """Count how often actual and predicted labels match
 
     Args:
-        gold (dict): IDs of labels
-        pred (dict): Vocab of labels
-        stats (dict):
+        actual (dict): actual label
+        pred (dict): predicted label
+        stats (dict): resulting dict with stored count
 
     Returns:
         Dict: dictionary of spans
     """
-    for start, (lbl, end) in gold.items():
-        stats['total']['gold'] += 1
-        stats[lbl]['gold'] += 1
-    for start, (lbl, end) in pred.items():
+    for key, value in actual.items():
+        stats['total']['actual'] += 1
+    for key, value in pred.items():
         stats['total']['pred'] += 1
-        stats[lbl]['pred'] += 1
-    for start, (glbl, gend) in gold.items():
-        if start in pred:
-            plbl, pend = pred[start]
-            if glbl == plbl and gend == pend:
+    for key, (lbl, end) in actual.items():
+        if key in pred:
+            plbl, pend = pred[key]
+            if lbl == plbl and end == pend:
                 stats['total']['corr'] += 1
-                stats[glbl]['corr'] += 1
 
-def evaluate_iob(predicted, gold, label_field, stats):
+def evaluate(predicted, actual, label_field, stats):
     """ Evaluate 
 
     Args:
-        labels (list): IDs of labels
-        voc (list): Vocab of labels
+        predicted (array): predicted label vector
+        actual (Tensor): actual label vector
+        label_field (Field): Field of labels, containing the vocabulary
+        stats (dict): Dictionary for returning the stats
 
     Returns:
         Dict: dictionary of spans
     """
-    gold_cpu = np.array(gold.t().cpu())
-    gold_cpu = list(gold_cpu.reshape(-1))
+    actual_cpu = np.array(actual.t().cpu())
+    actual_cpu = list(actual_cpu.reshape(-1)) # get vector of actual label
     pred_cpu = [l for sen in predicted for l in sen]
-    gold_spans = to_spans(gold_cpu, label_field.vocab.itos)
-    pred_spans = to_spans(pred_cpu, label_field.vocab.itos)
-    compare(gold_spans, pred_spans, stats)
+    actual_spans = map_labels(actual_cpu, label_field.vocab.itos)
+    pred_spans = map_labels(pred_cpu, label_field.vocab.itos)
+    count(actual_spans, pred_spans, stats)
 
 def compute_f1(stats):
     """ Computes the f1 score
 
     Args:
-        stats (dict): dictionary of predictions
+        stats (dict): evaluation stats (num of actual, predicted, and correlated labels)
 
     Returns:
         double: f1 score
@@ -176,7 +173,7 @@ def compute_f1(stats):
     if stats['pred'] == 0:
         return 0.0
     precision = stats['corr']/stats['pred']
-    recall = stats['corr']/stats['gold']
+    recall = stats['corr']/stats['actual']
     if precision > 0 and recall > 0:
         return 2*precision*recall/(precision+recall)
     else:
@@ -238,7 +235,7 @@ test_iterator = BucketIterator(
 optimizer = Adam(model.parameters(), lr=0.01, weight_decay=1e-5)
 
 # Set epochs to 20
-n_epochs = 2
+n_epochs = 20
 
 result = defaultdict(list)  
 
@@ -263,7 +260,7 @@ for i in range(1, n_epochs + 1):
             predicted = model.predict(batch.text)        
 
             # evaluation of the predicted labels           
-            evaluate_iob(predicted, batch.label, LABEL, stats)
+            evaluate(predicted, batch.label, LABEL, stats)
 
     f1 = compute_f1(stats['total'])
     result['f1'].append(f1)
@@ -272,10 +269,6 @@ for i in range(1, n_epochs + 1):
 print('Evaluation on the test data:')
 f1 = compute_f1(stats['total'])
 print(f'F1 = {f1:.4f}')
-for label in stats:
-    if label != 'total':
-        f1 = compute_f1(stats[label])
-        print(f'{label:4s}: F1 = {f1:.4f}')
 
 plt.plot(result['train_loss'])
 plt.plot(result['f1'])
